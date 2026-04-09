@@ -1,0 +1,12 @@
+google-cloud-storage
+google-cloud-aiplatform
+faster-whisper==1.0.3
+# Torch viene en la imagen base, pero esto asegura compatibilidad
+torch
+requests
+# NumPy <2.0 requerido por pyannote (np.NaN deprecated en 2.0)
+numpy<2.0
+# Pyannote para diarización en modo presencial
+pyannote.audio==3.1.1
+torchaudio
+huggingface-hub==0.23.2
