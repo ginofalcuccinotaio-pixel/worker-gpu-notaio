@@ -27,6 +27,11 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 7. PRE-CACHE DE MODELOS: 
+# Descargamos el modelo large-v3 de Whisper durante el build.
+# Esto evita que la VM pierda tiempo bajándolo en cada arranque.
+RUN python3 -c 'from faster_whisper import WhisperModel; WhisperModel("large-v3", device="cpu", compute_type="int8")'
+
 # 7. EL CEREBRO: Copiamos el script de lógica que recuperamos.
 # Recordá que este es el archivo donde vas a aplicar los fixes de la v2.12.
 COPY gpu_worker.py .

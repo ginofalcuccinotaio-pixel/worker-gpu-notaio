@@ -756,14 +756,21 @@ def main():
         print("📡 NOTIFICACIÓN AL BACKEND")
         print("="*60)
 
-        BACKEND_URL = "https://notaio-backend-1007838680332.us-central1.run.app" 
+        # Intentar obtener la URL del entorno, fallback a la URL conocida
+        BACKEND_URL = os.environ.get("BACKEND_URL", "https://notaio-backend-1007838680332.us-central1.run.app")
         webhook_endpoint = f"{BACKEND_URL}/webhook/transcription-ready/{SESSION_ID}"
 
+        # Calcular duración aproximada desde el diálogo
+        duration = 0
+        if dialogo_final:
+            duration = dialogo_final[-1].get('segundos_exactos', 0)
+
         try:
-            response = requests.post(webhook_endpoint, timeout=30)
+            payload = {"duration": int(duration)}
+            response = requests.post(webhook_endpoint, json=payload, timeout=30)
             
             if response.status_code == 200:
-                print(f"✅ Backend notificado con éxito: {response.json()}")
+                print(f"✅ Backend notificado con éxito (Duración: {duration}s): {response.json()}")
             else:
                 print(f"⚠️ El Backend respondió con error: {response.status_code} - {response.text}")
 
