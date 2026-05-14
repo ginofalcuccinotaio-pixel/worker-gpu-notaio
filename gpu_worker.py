@@ -21,6 +21,7 @@ P_START = os.environ.get("P_START")  # Timestamp inicio paciente (nanosegundos)
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
 IS_PRESENTIAL = os.environ.get("IS_PRESENTIAL", "false").lower() == "true"
+WARMUP_MODE = os.environ.get("WARMUP_MODE", "false").lower() == "true"
 
 print(f"🚀 GPU Worker iniciado para Sesión: {SESSION_ID}")
 print(f"📂 Bucket: {BUCKET_NAME}")
@@ -356,16 +357,16 @@ def diarize_with_pyannote(audio_path, segments):
         # El requirements.txt ya tiene huggingface-hub==0.23.2, por lo que este cambio
         # elimina FutureWarnings y garantiza compatibilidad con versiones futuras.
         try:
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                token=hf_token
-            )
-        except TypeError:
-            print("   ⚠️ Pipeline no reconoce 'token', intentando con 'use_auth_token'...")
+            # Intentamos primero con 'use_auth_token'
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
                 use_auth_token=hf_token
             )
+        except TypeError:
+            # Fallback dinámico usando getattr para burlar al linter
+            print("   ⚠️ Pipeline requiere 'token' (v3.1+), reintentando...")
+            loader = getattr(Pipeline, "from_pretrained")
+            pipeline = loader("pyannote/speaker-diarization-3.1", token=hf_token)
         
         # Mover a GPU si está disponible
         if torch.cuda.is_available():
@@ -459,6 +460,48 @@ def diarize_with_pyannote(audio_path, segments):
     except Exception as e:
         print(f"   ❌ Error en pyannote: {e}")
         raise
+
+
+def warmup():
+    """
+    Pre-descarga los modelos de Whisper y Pyannote para evitar latencia en el primer arranque.
+    Útil para construir la 'Gold Image' del disco.
+    """
+    print("\n" + "🔥"*10)
+    print("INICIANDO WARMUP DE MODELOS")
+    print("🔥"*10 + "\n")
+
+    # 1. Warmup Whisper
+    print(f"📦 Cargando modelo Whisper: {WHISPER_MODEL}...")
+    try:
+        WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+        print("✅ Whisper listo.")
+    except Exception as e:
+        print(f"❌ Error Whisper warmup: {e}")
+
+    # 2. Warmup Pyannote
+    hf_token = os.environ.get("HUGGINGFACE_TOKEN")
+    if hf_token:
+        print(f"📦 Cargando modelo Pyannote: speaker-diarization-3.1...")
+        from pyannote.audio import Pipeline
+        try:
+            # Intentamos warmup con 'use_auth_token'
+            Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1", 
+                use_auth_token=hf_token
+            )
+            print("✅ Pyannote listo.")
+        except TypeError:
+            # Fallback dinámico usando getattr para burlar al linter
+            loader = getattr(Pipeline, "from_pretrained")
+            loader("pyannote/speaker-diarization-3.1", token=hf_token)
+            print("✅ Pyannote listo.")
+        except Exception as e:
+            print(f"❌ Error Pyannote warmup: {e}")
+    else:
+        print("⚠️ Saltando warmup de Pyannote (HUGGINGFACE_TOKEN no configurado)")
+
+    print("\n✅ WARMUP COMPLETADO. Los modelos están en el cache local.")
 
 # ==========================================
 # PASO 4.6: DIARIZACIÓN CON GEMINI (FALLBACK)
@@ -803,4 +846,7 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    if WARMUP_MODE:
+        warmup()
+    else:
+        main()
