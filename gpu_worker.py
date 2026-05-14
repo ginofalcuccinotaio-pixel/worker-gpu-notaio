@@ -209,20 +209,51 @@ def transcribe_with_whisper(audio_path, role):
     """
     Transcribe un archivo de audio usando Faster-Whisper.
     Retorna segmentos con timestamps a nivel palabra.
+    
+    Guardrails anti-alucinación activos:
+    - condition_on_previous_text=False : rompe bucles en silencios clínicos prolongados
+    - temperature como lista            : fallback progresivo si la decodificación falla
+    - compression_ratio_threshold       : descarta texto repetitivo (síntoma de loop)
+    - log_prob_threshold                : descarta segmentos de baja confianza
+    - no_speech_threshold               : filtra silencios y ruido de fondo
+    - initial_prompt                    : calibra vocabulario clínico/argentino desde el inicio
     """
     print(f"🎙️ Transcribiendo {role} con Whisper {WHISPER_MODEL}...")
     
     # Cargar modelo (se cachea automáticamente)
     model = WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type="float16")
     
-    # Transcribir
+    # Prompt clínico: calibra el vocabulario inicial del modelo.
+    # Incluye terminología psicoanalítica, jerga argentina y contexto del encuadre
+    # para reducir errores de transcripción en términos técnicos y lunfardo rioplatense.
+    prompt_clinico = (
+        "Psicología clínica, psicoanálisis, terapia cognitivo-conductual, psiquiatría. "
+        "Terapeuta, paciente, sesión, consultorio, encuadre, setting. "
+        "Angustia, ansiedad, depresión, melancolía, duelo, trauma, acting out. "
+        "Transferencia, contratransferencia, inconsciente, represión, sublimación, resistencia. "
+        "Superyó, yo, ello, pulsión, deseo, goce, fantasma, síntoma. "
+        "Asociación libre, interpretación, señalamiento, intervención, corte de sesión. "
+        "Che, vos, dale, mirá, sabés, te digo, no sé, es que, o sea, igual, "
+        "capaz, tipo, re, posta, ni idea, onda, obvio, nada que ver. "
+        "Buenos Aires, Argentina. Hablan dos personas: un terapeuta y su paciente."
+    )
+    
+    # Transcribir con parámetros de alta precisión y guardrails anti-alucinación.
+    # CRÍTICO: condition_on_previous_text=False es el fix principal para los bucles.
+    # Sin él, Whisper con temperature=0.0 se retroalimenta de su propio output
+    # durante los silencios y genera texto repetitivo o inventado de forma infinita.
     segments, info = model.transcribe(
         audio_path,
         language="es",
         beam_size=5,
-        word_timestamps=True,  # CRÍTICO para diarización
-        vad_filter=True,       # Filtro de detección de voz
-        temperature=0.0
+        word_timestamps=True,                         # CRÍTICO para diarización
+        vad_filter=True,                              # Filtro de detección de voz activo
+        temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],  # Fallback progresivo si falla la confianza
+        condition_on_previous_text=False,             # CRÍTICO: previene bucles en silencios clínicos
+        compression_ratio_threshold=2.0,              # Descarta texto repetitivo (loops)
+        log_prob_threshold=-1.0,                      # Descarta segmentos de baja confianza
+        no_speech_threshold=0.4,                      # Filtra silencios y ruido de fondo
+        initial_prompt=prompt_clinico                 # Vocabulario clínico/argentino
     )
     
     print(f"   Idioma detectado: {info.language} (prob: {info.language_probability:.2f})")
@@ -321,10 +352,20 @@ def diarize_with_pyannote(audio_path, segments):
         raise ValueError("❌ HUGGINGFACE_TOKEN no configurado. Obtén uno en: https://huggingface.co/settings/tokens")
     
     try:
-        pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token
-        )
+        # ACTUALIZACIÓN: token= reemplaza use_auth_token= (deprecado en huggingface-hub>=0.22.0)
+        # El requirements.txt ya tiene huggingface-hub==0.23.2, por lo que este cambio
+        # elimina FutureWarnings y garantiza compatibilidad con versiones futuras.
+        try:
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                token=hf_token
+            )
+        except TypeError:
+            print("   ⚠️ Pipeline no reconoce 'token', intentando con 'use_auth_token'...")
+            pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=hf_token
+            )
         
         # Mover a GPU si está disponible
         if torch.cuda.is_available():
@@ -333,9 +374,13 @@ def diarize_with_pyannote(audio_path, segments):
         else:
             print("   ⚠️ GPU no disponible, usando CPU (será más lento)")
         
-        # Ejecutar diarización
-        print("   🔍 Procesando audio...")
-        diarization = pipeline(audio_path)
+        # CRÍTICO: num_speakers=2 fuerza el clustering a exactamente 2 grupos.
+        # Sin este parámetro, pyannote puede detectar ruidos ambientales del consultorio
+        # (sillas, puerta, aire acondicionado) como un tercer hablante, rompiendo
+        # la asignación de roles Terapeuta/Paciente. En el encuadre clínico presencial
+        # siempre hay exactamente 2 personas: el parámetro es semánticamente correcto.
+        print("   🔍 Procesando audio (Forzando 2 hablantes)...")
+        diarization = pipeline(audio_path, num_speakers=2)
         
         # Extraer información de speakers
         speaker_segments = []
@@ -711,14 +756,21 @@ def main():
         print("📡 NOTIFICACIÓN AL BACKEND")
         print("="*60)
 
-        BACKEND_URL = "https://notaio-backend-1007838680332.us-central1.run.app" 
+        # Intentar obtener la URL del entorno, fallback a la URL conocida
+        BACKEND_URL = os.environ.get("BACKEND_URL", "https://notaio-backend-1007838680332.us-central1.run.app")
         webhook_endpoint = f"{BACKEND_URL}/webhook/transcription-ready/{SESSION_ID}"
 
+        # Calcular duración aproximada desde el diálogo
+        duration = 0
+        if dialogo_final:
+            duration = dialogo_final[-1].get('segundos_exactos', 0)
+
         try:
-            response = requests.post(webhook_endpoint, timeout=30)
+            payload = {"duration": int(duration)}
+            response = requests.post(webhook_endpoint, json=payload, timeout=30)
             
             if response.status_code == 200:
-                print(f"✅ Backend notificado con éxito: {response.json()}")
+                print(f"✅ Backend notificado con éxito (Duración: {duration}s): {response.json()}")
             else:
                 print(f"⚠️ El Backend respondió con error: {response.status_code} - {response.text}")
 
