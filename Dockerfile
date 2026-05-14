@@ -28,6 +28,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 7. PRE-CACHE DE MODELOS: 
+# Definimos rutas de cache para que sean fáciles de persistir/mapear.
+ENV HF_HOME=/app/models
+RUN mkdir -p /app/models
+
 # Descargamos el modelo large-v3 de Whisper durante el build.
 # Esto evita que la VM pierda tiempo bajándolo en cada arranque.
 RUN python3 -c 'from faster_whisper import WhisperModel; WhisperModel("large-v3", device="cpu", compute_type="int8")'
