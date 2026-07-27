@@ -1,5 +1,6 @@
 google-cloud-storage
 google-cloud-aiplatform
+google-genai
 faster-whisper==1.0.3
 # Torch viene en la imagen base, pero esto asegura compatibilidad
 torch
