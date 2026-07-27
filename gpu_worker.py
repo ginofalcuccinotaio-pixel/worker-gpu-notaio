@@ -510,7 +510,7 @@ def warmup():
 def diarize_with_gemini(segments):
     """
     [DEPRECATED - USA SOLO COMO FALLBACK]
-    Usa Gemini 2.0 Flash para identificar quién habla en cada segmento.
+    Usa Gemini 3.1 Flash Lite para identificar quién habla en cada segmento.
     
     NOTA: Esta función se mantiene solo como fallback de emergencia.
     El método principal es diarize_with_pyannote().
@@ -518,14 +518,12 @@ def diarize_with_gemini(segments):
     Entrada: Lista de segmentos de Whisper (sin información de hablante)
     Salida: Dialogo con formato standard [{tiempo, hablante, texto, segundos_exactos}]
     """
-    print("🤖 Diarización con Gemini 2.0 Flash...")
+    print("🤖 Diarización con Gemini 3.1 Flash Lite...")
     
-    import vertexai
-    from vertexai.generative_models import GenerativeModel
+    from google import genai
     
-    # Inicializar Vertex AI
-    vertexai.init(project="webnotaio", location="us-central1")
-    model = GenerativeModel("gemini-2.0-flash")
+    # Inicializar cliente de GenAI
+    client = genai.Client(vertexai=True, project="webnotaio", location="global")
     
     # Construir transcripción completa con timestamps
     transcript_lines = []
@@ -558,7 +556,10 @@ IMPORTANTE:
 - Solo añade el campo "hablante"'''
     
     try:
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=prompt
+        )
         response_text = response.text.strip()
         
         # Limpiar markdown si viene envuelto
